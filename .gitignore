@@ -1,0 +1,8 @@
+# local folder
+local/
+
+# 3D file formats
+*.ply
+
+# mypy related
+.mypy_cache/
