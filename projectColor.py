@@ -8,52 +8,53 @@ from scipy.spatial import KDTree
 def main():
     print("Loading data...")
 
-    # load reconstructions
-    rec2_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalWarmLightSparseReconstruction"
-    rec1 = col.Reconstruction()
-    rec2 = col.Reconstruction(rec2_path)
+    # load reconstruction and model
+    rec_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalWarmLightSparseReconstruction"
+    ply_in_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalLightDenseReconstruction/fused.ply"
+    rec = col.Reconstruction(rec_path)
+    ply = col.Reconstruction()
+    ply.import_PLY(ply_in_path)
 
     # load the similiarity from disk
-    rec2_from_rec1 = col.Sim3d(
+    rec_similiarity = col.Sim3d(
         translation=np.load("local/translation.npy"),
         rotation=col.Rotation3d(np.load("local/rotation.npy")),
         scale=np.load("local/scale.npy")
     )
     
-    # load the points of the dense reconstruction
-    rec1_ply_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalLightDenseReconstruction/fused.ply"
-    rec1.import_PLY(rec1_ply_path)
+    # apply similiarity to model's points
+    ply.transform(rec_similiarity)
+
+    # extract points from model
+    points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
+
+    # unload model
+    del ply
     
-    # put the points of the dense reconstruction in a numpy array and transform them to rec2 space
-    points = np.array([rec2_from_rec1 * point.xyz for point in rec1.points3D.values()], dtype=np.float64)
-
-    # free some memory
-    # removing 3d points from rec2 is a step for when we will use rec2 to write the ply file 
-    del rec1
-    for point_id in rec2.points3D.keys():
-        rec2.delete_point3D(point_id)
-
-    # data structure for keeping colors of every point
+    # data structure for keeping the colors of every point
     colors_per_point = [[] for i in range(points.size)]
 
     # PARAMETERS
     neighbor_distance = 15 # in pixel
     max_depth_difference = 1 # in the unit of measure of the 3D model
+    
+    # Filter images
+    images_id = []
+    image_filter = "Warm"
+    for image in rec.images.values():
+        if image_filter in image.name:
+            images_id.append(image.image_id)
 
+    # Process filtered images
     print("Processing images...")
-    image_index = 0
-    for image in rec2.images.values():
-        image: col.Image
-
-        # check if image is of a certain type
-        # if not skip it
-        image_type = "Warm"
-        if image_type not in image.name:
-            continue
-
-        image_index += 1
-        print("    Processing " + str(image_index) + "th image...")
+    for image_index, image_id in enumerate(images_id):
+        image = rec.image(image_id)
+        
+        print("    Processing " + str(image_index + 1) + "th image...")
         print("    Image is", image.name)
+
+        # get image camera
+        camera = image.camera
 
         # get image size
         width = image.camera.width
@@ -63,34 +64,32 @@ def main():
         # the array has size [height, width, 3]
         image_data = col.Bitmap.read("../../ColmapWorkspace/CVProject/images/" + image.name, True).to_array()
 
-        # project point on image (discarding points behind the camera)
-        projected_points = [(point_index, image.project_point(point))
-                                for point_index, point in enumerate(points)
-                                if image.project_point(point) is not None]
-        projected_points_info = np.array([[point_index, point[0], point[1]]
-                                          for point_index, point in projected_points],
-                                    dtype=np.float64)
-        del projected_points
+        # project points on image
+        projected_points = camera.img_from_cam(image.cam_from_world() * points)
 
-        # put them in a 2dtree
-        points_tree = KDTree(projected_points_info[:,1:3])
+        # calculate boolean array checking for nans (i.e. points behind the camera)
+        is_not_behind_camera = np.logical_not(np.isnan(projected_points[:,0]))
+
+        # put valid points in a 2dtree
+        points_tree = KDTree(projected_points[is_not_behind_camera])
         
-        for projected_point_info in projected_points_info:
-            projected_point_index = int(projected_point_info[0])
-            projected_point = projected_point_info[1:3]
-            
+        for projected_point_index, projected_point in enumerate(projected_points):
+            # check if point is behind the camera, if it is skip it
+            if not is_not_behind_camera[projected_point_index]:
+                continue
+
             # get the point depth in 3D
             point_depth = points[projected_point_index][2]
             
             # if the point is projected outside the visible part of the image ignore it
             if projected_point[0] < 0 or projected_point[1] < 0 or projected_point[0] > width or projected_point[1] > height:
-                continue 
+                continue
             
             # get the indices of the neighbors
             neighbor_indices = points_tree.query_ball_point(projected_point, neighbor_distance)
             
             # get the neighbor depths
-            neighbor_depths = points[projected_points_info[neighbor_indices][:,0].astype(np.int64)][:,2]
+            neighbor_depths = points[neighbor_indices][:,2]
             
             # get the depth of the neighbor nearest to the camera
             lowest_depth = np.min(neighbor_depths, initial=np.inf)
@@ -101,7 +100,7 @@ def main():
                 continue
             
             # get color from image
-            color = image_data[int(np.floor(projected_point[1])), int(np.floor(projected_point[0]))] # TODO do bilinear or trilinear interpolation
+            color = image_data[np.floor(projected_point[1]).astype(np.int32), np.floor(projected_point[0]).astype(np.int32)] # TODO do bilinear or trilinear interpolation
 
             # add color to point
             colors_per_point[projected_point_index].append(color)
@@ -114,9 +113,10 @@ def main():
     
     # add points to reconstruction
     print("Coloring...")
+    ply = col.Reconstruction()
     dummy_track = col.Track()
     for index in range(points.shape[0]):
-        rec2.add_point3D(points[index], dummy_track, colors[index])
+        ply.add_point3D(points[index], dummy_track, colors[index])
 
     # TODO need a way to store the index of not colored point
     # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
@@ -124,7 +124,7 @@ def main():
     # write ply file
     print("Writing ply...")
     ply_out_path = "out.ply"
-    rec2.export_PLY(ply_out_path)
+    ply.export_PLY(ply_out_path)
 
 if __name__ == "__main__":
     main()
