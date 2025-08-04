@@ -2,9 +2,6 @@ import numpy as np
 import pycolmap as col
 from scipy.spatial import KDTree
 
-# TODO to improve performance parallellize the processing
-# TODO to improve performance ignore points hidden by already processed points
-
 def main():
     print("Loading data...")
 
@@ -108,7 +105,7 @@ def main():
     # calculate the color of the points
     colors = np.array(  [np.mean(colors, axis=0).astype(np.uint8)
                             if len(colors) > 0
-                            else np.array([0, 0, 0], dtype=np.uint8) # TODO manage not colored points
+                            else np.array([0, 0, 0], dtype=np.uint8) # color not colored points black
                             for colors in colors_per_point])
     
     # add points to reconstruction
@@ -118,7 +115,6 @@ def main():
     for index in range(points.shape[0]):
         ply.add_point3D(points[index], dummy_track, colors[index])
 
-    # TODO need a way to store the index of not colored point
     # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
 
     # write ply file
