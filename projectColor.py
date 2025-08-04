@@ -2,67 +2,35 @@ import numpy as np
 import pycolmap as col
 from scipy.spatial import KDTree
 
-def main():
-    print("Loading data...")
-
-    # load reconstruction and model
-    rec_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalWarmLightSparseReconstruction"
-    ply_in_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalLightDenseReconstruction/fused.ply"
-    rec = col.Reconstruction(rec_path)
-    ply = col.Reconstruction()
-    ply.import_PLY(ply_in_path)
-
-    # load the similiarity from disk
-    rec_similiarity = col.Sim3d(
-        translation=np.load("local/translation.npy"),
-        rotation=col.Rotation3d(np.load("local/rotation.npy")),
-        scale=np.load("local/scale.npy")
-    )
+class Image:
+    def __init__(self, path, image: col.Image):
+        self.path = path
+        self.width = image.camera.width
+        self.height = image.camera.height
+        self.__image = image
+        self.__camera = image.camera
     
-    # apply similiarity to model's points
-    ply.transform(rec_similiarity)
+    def project_points(self, points):
+        return self.__camera.img_from_cam(self.__image.cam_from_world() * points)
 
-    # extract points from model
-    points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
 
-    # unload model
-    del ply
-    
+def project_colors(points, images, neighbor_distance, max_depth_difference):
     # data structure for keeping the colors of every point
-    colors_per_point = [[] for i in range(points.size)]
-
-    # PARAMETERS
-    neighbor_distance = 15 # in pixel
-    max_depth_difference = 1 # in the unit of measure of the 3D model
+    colors_per_point = [[] for i in range(points.shape[0])]
     
-    # Filter images
-    images_id = []
-    image_filter = "Warm"
-    for image in rec.images.values():
-        if image_filter in image.name:
-            images_id.append(image.image_id)
-
-    # Process filtered images
+    # projecting colors to points
     print("Processing images...")
-    for image_index, image_id in enumerate(images_id):
-        image = rec.image(image_id)
-        
+    for image_index, image in enumerate(images):
+        image: Image
         print("    Processing " + str(image_index + 1) + "th image...")
-        print("    Image is", image.name)
-
-        # get image camera
-        camera = image.camera
-
-        # get image size
-        width = image.camera.width
-        height = image.camera.height
-
+        print("    Image is", image.path)
+        
         # load image in memory
         # the array has size [height, width, 3]
-        image_data = col.Bitmap.read("../../ColmapWorkspace/CVProject/images/" + image.name, True).to_array()
+        image_data = col.Bitmap.read(image.path, True).to_array()
 
         # project points on image
-        projected_points = camera.img_from_cam(image.cam_from_world() * points)
+        projected_points = image.project_points(points)
 
         # calculate boolean array checking for nans (i.e. points behind the camera)
         is_not_behind_camera = np.logical_not(np.isnan(projected_points[:,0]))
@@ -79,7 +47,8 @@ def main():
             point_depth = points[projected_point_index][2]
             
             # if the point is projected outside the visible part of the image ignore it
-            if projected_point[0] < 0 or projected_point[1] < 0 or projected_point[0] > width or projected_point[1] > height:
+            if (projected_point[0] < 0 or projected_point[1] < 0  or
+                projected_point[0] > image.width or projected_point[1] > image.height):
                 continue
             
             # get the indices of the neighbors
@@ -102,25 +71,66 @@ def main():
             # add color to point
             colors_per_point[projected_point_index].append(color)
 
+    # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
+
     # calculate the color of the points
-    colors = np.array(  [np.mean(colors, axis=0).astype(np.uint8)
+    return np.array([np.mean(colors, axis=0).astype(np.uint8)
                             if len(colors) > 0
                             else np.array([0, 0, 0], dtype=np.uint8) # color not colored points black
-                            for colors in colors_per_point])
-    
-    # add points to reconstruction
+                            for colors in colors_per_point])    
+
+
+def write_ply(out_path, points, colors):
+    # add points to model
     print("Coloring...")
     ply = col.Reconstruction()
     dummy_track = col.Track()
     for index in range(points.shape[0]):
         ply.add_point3D(points[index], dummy_track, colors[index])
 
-    # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
-
     # write ply file
     print("Writing ply...")
-    ply_out_path = "out.ply"
-    ply.export_PLY(ply_out_path)
+    ply.export_PLY(out_path)
+
+
+def main():
+    print("Loading data...")
+
+    # load reconstruction
+    rec_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalWarmLightSparseReconstruction"
+    rec = col.Reconstruction(rec_path)
+
+    # load model
+    ply_in_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalLightDenseReconstruction/fused.ply"
+    ply = col.Reconstruction()
+    ply.import_PLY(ply_in_path)
+
+    # load similiarity model->rec from disk
+    rec_similiarity = col.Sim3d(
+        translation=np.load("local/translation.npy"),
+        rotation=col.Rotation3d(np.load("local/rotation.npy")),
+        scale=np.load("local/scale.npy")
+    )
+    
+    # apply similiarity to model points
+    ply.transform(rec_similiarity)
+
+    # extract points from model
+    points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
+
+    # unload model
+    del ply
+    
+    # Filter images
+    images = []
+    image_filter = "Warm"
+    for image in rec.images.values():
+        image: col.Image
+        if image_filter in image.name:
+            images.append(Image("../../ColmapWorkspace/CVProject/images/" + image.name, image))
+    
+    colors = project_colors(points, images, 15, 1)
+    write_ply("out.ply", points, colors)
 
 if __name__ == "__main__":
     main()
