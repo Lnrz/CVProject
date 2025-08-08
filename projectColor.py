@@ -1,6 +1,7 @@
 import numpy as np
 import pycolmap as col
 from scipy.spatial import KDTree
+from changeProjectPaths import change_project_paths
 
 class Image:
     def __init__(self, path, image: col.Image):
@@ -71,6 +72,7 @@ def project_colors(points, images, neighbor_distance, max_depth_difference):
             # add color to point
             colors_per_point[projected_point_index].append(color)
 
+        break
     # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
 
     # calculate the color of the points
@@ -94,22 +96,25 @@ def write_ply(out_path, points, colors):
 
 
 def main():
+    print("Updating project.ini...")
+    change_project_paths()
+
     print("Loading data...")
 
     # load reconstruction
-    rec_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalWarmLightSparseReconstruction"
+    rec_path = "ins/reconstructions/myReconstruction/roomCornerNaturalWarmLightSparseReconstruction"
     rec = col.Reconstruction(rec_path)
 
     # load model
-    ply_in_path = "../../ColmapWorkspace/CVProject/roomCornerNaturalLightDenseReconstruction/fused.ply"
+    ply_in_path = "ins/models/noColor.ply"
     ply = col.Reconstruction()
     ply.import_PLY(ply_in_path)
 
     # load similiarity model->rec from disk
     rec_similiarity = col.Sim3d(
-        translation=np.load("local/translation.npy"),
-        rotation=col.Rotation3d(np.load("local/rotation.npy")),
-        scale=np.load("local/scale.npy")
+        translation=np.load("ins/transformations/translation.npy"),
+        rotation=col.Rotation3d(np.load("ins/transformations/rotation.npy")),
+        scale=np.load("ins/transformations/scale.npy")
     )
     
     # apply similiarity to model points
@@ -123,14 +128,16 @@ def main():
     
     # Filter images
     images = []
+    image_folder_path = "ins/reconstructions/myReconstruction/images/"
     image_filter = "Warm"
     for image in rec.images.values():
         image: col.Image
         if image_filter in image.name:
-            images.append(Image("../../ColmapWorkspace/CVProject/images/" + image.name, image))
+            images.append(Image(image_folder_path + image.name, image))
     
     colors = project_colors(points, images, 15, 1)
-    write_ply("out.ply", points, colors)
+    ply_out_path = "outs/out.ply"
+    write_ply(ply_out_path, points, colors)
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,15 @@ local/
 
 # 3D file formats
 *.ply
+!ins/models/noColor.ply
+!outs/naturalLight.ply
+!outs/warmLight.ply
+
+# project.ini
+ins\reconstructions\myReconstruction\roomCornerNaturalWarmLightSparseReconstruction\project.ini
+
+# pychace
+__pycache__/
 
 # mypy related
 .mypy_cache/
