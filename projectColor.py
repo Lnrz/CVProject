@@ -3,7 +3,6 @@ import numpy.typing as npt
 import pycolmap as col
 import argparse as argp
 from scipy.spatial import KDTree
-from changeProjectPaths import change_project_paths
 from enum import Enum
 from collections.abc import Iterable
 
@@ -152,35 +151,20 @@ def main():
     max_depth_difference = args.max_depth_difference
     out_format = Format.DENSE if args.dense else Format.SPARSE
 
-    print("Updating project.ini...")
-    change_project_paths()
-
     print("Loading data...")
-
     # load reconstruction
     rec = col.Reconstruction(rec_path)
 
-    if out_format == Format.DENSE:
-        # load model
-        ply = col.Reconstruction()
-        ply.import_PLY(model_path)
-
-        # load similiarity model->rec from disk
-        rec_similiarity = col.Sim3d(
-            translation=np.load("ins/transformations/translation.npy"),
-            rotation=col.Rotation3d(np.load("ins/transformations/rotation.npy")),
-            scale=np.load("ins/transformations/scale.npy")
-        )
-        
-        # apply similiarity to model points
-        ply.transform(rec_similiarity)
-    
     match out_format:
         case Format.SPARSE:
             # extract points and ids from rec
             ids = np.array([point_id for point_id in rec.points3D.keys()], dtype=np.uint32)
             points = np.array([point.xyz for point in rec.points3D.values()], dtype=np.float64)
         case Format.DENSE:
+            # load model
+            ply = col.Reconstruction()
+            ply.import_PLY(model_path)
+
             # extract points from model
             points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
             
