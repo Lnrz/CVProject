@@ -72,14 +72,16 @@ def project_colors(points, images, neighbor_distance, max_depth_difference):
             # add color to point
             colors_per_point[projected_point_index].append(color)
 
-        break
-    # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV
+        break #for debugging purpouse
 
+    # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV or vector median filter
+    
     # calculate the color of the points
-    return np.array([np.mean(colors, axis=0).astype(np.uint8)
+    purple = np.array([178, 0, 254], dtype=np.uint8)
+    return np.array([np.mean(colors, axis=0).astype(np.uint8) # TODO mean, trimmed mean, median choices
                             if len(colors) > 0
-                            else np.array([0, 0, 0], dtype=np.uint8) # color not colored points black
-                            for colors in colors_per_point])    
+                            else purple # color not colored points purple for easy detection
+                            for colors in colors_per_point])
 
 
 def write_ply(out_path, points, colors):
