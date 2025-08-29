@@ -1,24 +1,58 @@
 import numpy as np
+import numpy.typing as npt
 import pycolmap as col
+import argparse as argp
 from scipy.spatial import KDTree
 from changeProjectPaths import change_project_paths
+from enum import Enum
+from collections.abc import Iterable
+
+class Format(Enum):
+    SPARSE = 0
+    DENSE = 1
 
 class Image:
-    def __init__(self, path, image: col.Image):
+    def __init__(self, path: str, image: col.Image):
         self.path = path
         self.width = image.camera.width
         self.height = image.camera.height
         self.__image = image
         self.__camera = image.camera
     
-    def project_points(self, points):
+    def project_points(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return self.__camera.img_from_cam(self.__image.cam_from_world() * points)
 
 
-def project_colors(points, images, neighbor_distance, max_depth_difference):
+
+def parse_arguments() -> argp.Namespace:
+    parser = argp.ArgumentParser(description="Project Image Color to Model")
+    parser.add_argument("reconstruction_path", type=str, help="Path to the reconstruction.")
+    parser.add_argument("image_folder_path", type=str, help="Path where the images are stored.")
+    parser.add_argument("image_name_filter", type=str, help="Only images with this filter in their names will be used.")
+    parser.add_argument("output_path", type=str, help="Path where to write the output.")
+    parser.add_argument("-mp", "--model_path", type=str, help="Path to the model. Required for dense flag.")
+    parser.add_argument("-nd", "--neighbor_distance", type=float, default=15,
+                        help="When processing a point projected on the image, this specifies the maximum distance of its neighbors. "
+                             "Measured in pixel.")
+    parser.add_argument("-mdd", "--max_depth_difference", type=float, default=1,
+                        help="When processing a point projected on the image, "
+                             "this specifies the maximum distance that there can be between the point's distance from the camera "
+                             "and the distance from the camera of its neighbor that is nearest to the camera. "
+                             "If greater the point will be skipped. "
+                             "Measured in the unit of measure of the reconstruction/model")
+    parser.add_argument("-s", "--sparse", action="store_true", help="Flag to output a reconstruction. Default.")
+    parser.add_argument("-d", "--dense", action="store_true", help="Flag to output a model.")
+    args = parser.parse_args()
+    
+    if args.dense and args.model_path is None:
+        print("For the dense output you need to specify the model.")
+        exit()
+
+    return args
+
+def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], neighbor_distance: float, max_depth_difference: float) -> npt.NDArray[np.uint8]:
     # data structure for keeping the colors of every point
     colors_per_point = [[] for i in range(points.shape[0])]
-    
     # projecting colors to points
     print("Processing images...")
     for image_index, image in enumerate(images):
@@ -74,17 +108,26 @@ def project_colors(points, images, neighbor_distance, max_depth_difference):
 
         break #for debugging purpouse
 
-    # TODO to color not colored point (if they are a low % otherwise don't do it) median filter on every channel of HSV or vector median filter
+    # TODO to color not colored point median filter on every channel of HSV or vector median filter
     
     # calculate the color of the points
     purple = np.array([178, 0, 254], dtype=np.uint8)
-    return np.array([np.mean(colors, axis=0).astype(np.uint8) # TODO mean, trimmed mean, median choices
+    return np.array([np.mean(colors, axis=0).astype(np.uint8) # TODO mean, trimmed mean, median
                             if len(colors) > 0
                             else purple # color not colored points purple for easy detection
                             for colors in colors_per_point])
 
+def write_rec(out_path: str, rec: col.Reconstruction, ids: npt.NDArray[np.uint32], colors: npt.NDArray[np.uint8]):
+    # color reconstruction points
+    print("Coloring...")
+    for point_id, point_color in zip(ids, colors):
+        rec.point3D(point_id).color = point_color
+    
+    # write reconstruction
+    print("Writing reconstruction...")
+    rec.write(out_path)
 
-def write_ply(out_path, points, colors):
+def write_ply(out_path: str, points: npt.NDArray[np.float64], colors: npt.NDArray[np.uint8]):
     # add points to model
     print("Coloring...")
     ply = col.Reconstruction()
@@ -98,48 +141,66 @@ def write_ply(out_path, points, colors):
 
 
 def main():
+    # get args
+    args = parse_arguments()
+    rec_path = args.reconstruction_path
+    image_folder_path = args.image_folder_path
+    image_filter = args.image_name_filter
+    out_path = args.output_path
+    model_path = args.model_path
+    neighbor_distance = args.neighbor_distance
+    max_depth_difference = args.max_depth_difference
+    out_format = Format.DENSE if args.dense else Format.SPARSE
+
     print("Updating project.ini...")
     change_project_paths()
 
     print("Loading data...")
 
     # load reconstruction
-    rec_path = "ins/reconstructions/myReconstruction/roomCornerNaturalWarmLightSparseReconstruction"
     rec = col.Reconstruction(rec_path)
 
-    # load model
-    ply_in_path = "ins/models/noColor.ply"
-    ply = col.Reconstruction()
-    ply.import_PLY(ply_in_path)
+    if out_format == Format.DENSE:
+        # load model
+        ply = col.Reconstruction()
+        ply.import_PLY(model_path)
 
-    # load similiarity model->rec from disk
-    rec_similiarity = col.Sim3d(
-        translation=np.load("ins/transformations/translation.npy"),
-        rotation=col.Rotation3d(np.load("ins/transformations/rotation.npy")),
-        scale=np.load("ins/transformations/scale.npy")
-    )
+        # load similiarity model->rec from disk
+        rec_similiarity = col.Sim3d(
+            translation=np.load("ins/transformations/translation.npy"),
+            rotation=col.Rotation3d(np.load("ins/transformations/rotation.npy")),
+            scale=np.load("ins/transformations/scale.npy")
+        )
+        
+        # apply similiarity to model points
+        ply.transform(rec_similiarity)
     
-    # apply similiarity to model points
-    ply.transform(rec_similiarity)
-
-    # extract points from model
-    points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
-
-    # unload model
-    del ply
+    match out_format:
+        case Format.SPARSE:
+            # extract points and ids from rec
+            ids = np.array([point_id for point_id in rec.points3D.keys()], dtype=np.uint32)
+            points = np.array([point.xyz for point in rec.points3D.values()], dtype=np.float64)
+        case Format.DENSE:
+            # extract points from model
+            points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
+            
+            # unload model
+            del ply
     
-    # Filter images
+    # get images of interest
     images = []
-    image_folder_path = "ins/reconstructions/myReconstruction/images/"
-    image_filter = "Warm"
     for image in rec.images.values():
         image: col.Image
         if image_filter in image.name:
             images.append(Image(image_folder_path + image.name, image))
     
-    colors = project_colors(points, images, 15, 1)
-    ply_out_path = "outs/out.ply"
-    write_ply(ply_out_path, points, colors)
+    colors = project_colors(points, images, neighbor_distance, max_depth_difference)
+
+    match out_format:
+        case Format.SPARSE:
+            write_rec(out_path, rec, ids, colors)
+        case Format.DENSE:
+            write_ply(out_path, points, colors)
 
 if __name__ == "__main__":
     main()
