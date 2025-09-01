@@ -49,6 +49,20 @@ def parse_arguments() -> argp.Namespace:
 
     return args
 
+def filter_images(rec: col.Reconstruction, image_folder_path: str, image_filter: str) -> Iterable[Image]:
+    images = []
+    
+    for image in rec.images.values():
+        image: col.Image
+        if image_filter in image.name:
+            images.append(Image(image_folder_path + image.name, image))
+    
+    if len(images) == 0:
+        print(f"No image match the filter: {image_filter}")
+        exit()
+
+    return images
+
 def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], neighbor_distance: float, max_depth_difference: float) -> npt.NDArray[np.uint8]:
     # data structure for keeping the colors of every point
     colors_per_point = [[] for i in range(points.shape[0])]
@@ -122,7 +136,6 @@ def write_rec(out_path: str, rec: col.Reconstruction, ids: npt.NDArray[np.uint32
     for point_id, point_color in zip(ids, colors):
         rec.point3D(point_id).color = point_color
     
-    # write reconstruction
     print("Writing reconstruction...")
     rec.write(out_path)
 
@@ -134,13 +147,11 @@ def write_ply(out_path: str, points: npt.NDArray[np.float64], colors: npt.NDArra
     for index in range(points.shape[0]):
         ply.add_point3D(points[index], dummy_track, colors[index])
 
-    # write ply file
     print("Writing ply...")
     ply.export_PLY(out_path)
 
 
 def main():
-    # get args
     args = parse_arguments()
     rec_path = args.reconstruction_path
     image_folder_path = args.image_folder_path
@@ -152,31 +163,22 @@ def main():
     out_format = Format.DENSE if args.dense else Format.SPARSE
 
     print("Loading data...")
-    # load reconstruction
     rec = col.Reconstruction(rec_path)
 
     match out_format:
         case Format.SPARSE:
-            # extract points and ids from rec
             ids = np.array([point_id for point_id in rec.points3D.keys()], dtype=np.uint32)
             points = np.array([point.xyz for point in rec.points3D.values()], dtype=np.float64)
         case Format.DENSE:
-            # load model
             ply = col.Reconstruction()
             ply.import_PLY(model_path)
 
-            # extract points from model
             points = np.array([point.xyz for point in ply.points3D.values()], dtype=np.float64)
             
             # unload model
             del ply
     
-    # get images of interest
-    images = []
-    for image in rec.images.values():
-        image: col.Image
-        if image_filter in image.name:
-            images.append(Image(image_folder_path + image.name, image))
+    images = filter_images(rec, image_folder_path, image_filter)
     
     colors = project_colors(points, images, neighbor_distance, max_depth_difference)
 
