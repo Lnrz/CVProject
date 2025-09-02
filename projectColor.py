@@ -70,25 +70,29 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
     print("Processing images...")
     for image_index, image in enumerate(images):
         image: Image
-        print("    Processing " + str(image_index + 1) + "th image...")
-        print("    Image is", image.path)
+        print(f"    Processing {image_index + 1}th image...")
+        print(f"    Image is {image.path}")
         
         # load image in memory
         # the array has size [height, width, 3]
-        image_data = col.Bitmap.read(image.path, True).to_array()
+        image_data = col.Bitmap.read(image.path, True)
+        if image_data is None:
+            print(f"    Couldn't read image at {image.path}. Skipping it...")
+            continue
+        image_data = image_data.to_array()
 
         # project points on image
         projected_points = image.project_points(points)
 
         # calculate boolean array checking for nans (i.e. points behind the camera)
-        is_not_behind_camera = np.logical_not(np.isnan(projected_points[:,0]))
+        is_behind_camera = np.isnan(projected_points[:,0])
 
         # put valid points in a 2dtree
-        points_tree = KDTree(projected_points[is_not_behind_camera])
+        points_tree = KDTree(projected_points[np.logical_not(is_behind_camera)])
         
         for projected_point_index, projected_point in enumerate(projected_points):
             # check if point is behind the camera, if it is skip it
-            if not is_not_behind_camera[projected_point_index]:
+            if is_behind_camera[projected_point_index]:
                 continue
 
             # get the point depth in 3D
@@ -177,7 +181,11 @@ def main():
             
             # unload model
             del ply
-    
+
+    if len(points) == 0:
+        print(f"No points found in {"reconstruction" if out_format == Format.SPARSE else "model"}.")
+        exit()
+
     images = filter_images(rec, image_folder_path, image_filter)
     
     colors = project_colors(points, images, neighbor_distance, max_depth_difference)
