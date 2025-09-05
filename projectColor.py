@@ -18,7 +18,13 @@ class Image:
         self.__image = image
         self.__camera = image.camera
     
-    def project_points(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    def cam_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        return self.__image.cam_from_world() * points
+
+    def project_points_from_cam(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+        return self.__camera.img_from_cam(points)
+
+    def project_points_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return self.__camera.img_from_cam(self.__image.cam_from_world() * points)
 
 
@@ -112,8 +118,10 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
             continue
         image_data = image_data.to_array()
 
+        # change frame from world to camera
+        points_in_cam_frame = image.cam_from_world(points)
         # project points on image
-        projected_points = image.project_points(points)
+        projected_points = image.project_points_from_cam(points_in_cam_frame)
 
         # calculate boolean array checking for nans (i.e. points behind the camera)
         is_behind_camera = np.isnan(projected_points[:,0])
@@ -126,26 +134,25 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
             # check if point is behind the camera, if it is skip it
             if is_behind_camera[projected_point_index]:
                 continue
-
-            # get the point depth in 3D
-            point_depth = points[projected_point_index][2]
-            
             # if the point is projected outside the visible part of the image ignore it
             if (projected_point[0] < 0 or projected_point[1] < 0  or
                 projected_point[0] > image.width or projected_point[1] > image.height):
                 continue
             
+            # get the point distance from camera
+            point_depth = points_in_cam_frame[projected_point_index][2]
+            
             # get the indices of the neighbors
             neighbor_indices = projected_points_tree.query_ball_point(projected_point, neighbor_distance)
             
-            # get the neighbor depths
-            neighbor_depths = points[neighbor_indices][:,2]
+            # get the neighbor distances from camera
+            neighbor_depths = points_in_cam_frame[neighbor_indices][:,2]
             
-            # get the depth of the neighbor nearest to the camera
+            # get the lowest distance from camera
             lowest_depth = np.min(neighbor_depths, initial=np.inf)
 
-            # if it can find a neighbor closer to the camera by a certain difference
-            # assume that this point is not actually seen in the image
+            # if a neighbor closer to the camera by a certain difference is found
+            # assume that this point is not seen in the image
             if (lowest_depth != np.inf) and (point_depth - lowest_depth > max_depth_difference):
                 continue
             
@@ -156,6 +163,7 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
             colors_per_point[projected_point_index].append(color)
         
         if image_cap != 0 and image_index == image_cap - 1:
+            print("    Reached image cap.")
             break
 
     print("Calculating colors...")
