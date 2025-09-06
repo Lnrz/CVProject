@@ -92,7 +92,7 @@ def filter_images(rec: col.Reconstruction, image_folder_path: str, image_filter:
         if image_filter in image.name:
             images.append(Image(image_folder_path + image.name, image))
     
-    if len(images) == 0:
+    if not images:
         print(f"No image match the filter: {image_filter}")
         exit()
 
