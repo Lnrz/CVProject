@@ -123,44 +123,42 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
         # project points on image
         projected_points = image.project_points_from_cam(points_in_cam_frame)
 
-        # calculate boolean array checking for nans (i.e. points behind the camera)
-        is_behind_camera = np.isnan(projected_points[:,0])
+        # get valid points i.e. points that:
+        #     are not behind the camera
+        #     are not outside of the image
+        #     are not too close to the camera
+        camera_distance_offset = 0.1
+        image_border_offset = 0.1
+        valid_points_indices = np.array([index for index in range(len(points))
+                                            if not np.isnan(projected_points[index][0]) and
+                                                (projected_points[index][0] >= image_border_offset and projected_points[index][1] >= image_border_offset and
+                                                projected_points[index][0] <= image.width - image_border_offset and projected_points[index][1] <= image.height - image_border_offset) and
+                                                points_in_cam_frame[index][2] >= camera_distance_offset], dtype=np.int32)
+        
+        # get the distance from camera of the valid points
+        valid_points_depths = points_in_cam_frame[valid_points_indices][:,2]
 
         # put valid points in a 2dtree
-        projected_points_tree = KDTree(projected_points[np.logical_not(is_behind_camera)])
+        projected_points_tree = KDTree(projected_points[valid_points_indices])
+        
+        # find neighbors of all valid points
+        neighbors = projected_points_tree.query_ball_tree(projected_points_tree, neighbor_distance)
         
         print(f"    Projecting {image_index_str}th image's colors...")
-        for projected_point_index, projected_point in enumerate(projected_points):
-            # check if point is behind the camera, if it is skip it
-            if is_behind_camera[projected_point_index]:
-                continue
-            # if the point is projected outside the visible part of the image ignore it
-            if (projected_point[0] < 0 or projected_point[1] < 0  or
-                projected_point[0] > image.width or projected_point[1] > image.height):
-                continue
-            
-            # get the point distance from camera
-            point_depth = points_in_cam_frame[projected_point_index][2]
-            
-            # get the indices of the neighbors
-            neighbor_indices = projected_points_tree.query_ball_point(projected_point, neighbor_distance)
-            
-            # get the neighbor distances from camera
-            neighbor_depths = points_in_cam_frame[neighbor_indices][:,2]
-            
-            # get the lowest distance from camera
-            lowest_depth = np.min(neighbor_depths, initial=np.inf)
+        for index, neighbor_indices in enumerate(neighbors):
+            # get lowest depth in the neighbors
+            lowest_depth = np.min(valid_points_depths[neighbor_indices], initial=np.inf)
 
-            # if a neighbor closer to the camera by a certain difference is found
-            # assume that this point is not seen in the image
-            if (lowest_depth != np.inf) and (point_depth - lowest_depth > max_depth_difference):
+            # skip point if in the neighbor there is a point closer to the camera by a certain difference
+            if (lowest_depth != np.inf) and (valid_points_depths[index] - lowest_depth > max_depth_difference):
                 continue
-            
+
             # get color from image
-            color = image_data[np.floor(projected_point[1]).astype(np.int32), np.floor(projected_point[0]).astype(np.int32)] # TODO do bilinear or trilinear interpolation
+            color = image_data[np.floor(projected_points[valid_points_indices[index]][1]).astype(np.int32),
+                               np.floor(projected_points[valid_points_indices[index]][0]).astype(np.int32)]
 
             # add color to point
-            colors_per_point[projected_point_index].append(color)
+            colors_per_point[valid_points_indices[index]].append(color)
         
         if image_cap != 0 and image_index == image_cap - 1:
             print("    Reached image cap.")
