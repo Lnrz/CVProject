@@ -192,14 +192,16 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
         not_colored_point_indices = np.array([index
                                                 for index, colors in enumerate(colors_per_point)
                                                 if not colors])
-        # put points in a 3D tree
+        # put points in 3D trees
         points_tree = KDTree(points)
+        not_colored_points_tree = KDTree(points[not_colored_points_tree])
         
-        for index in not_colored_point_indices:
-            # get neighbor indices
-            neighbor_indices = points_tree.query_ball_point(points[index], filling_radius)
+        # find neighbors
+        neighbors = not_colored_points_tree.query_ball_tree(points_tree)
+
+        for index, neighbors_indices in enumerate(neighbors):
             # check that there are neighbors otherwise skip the point
-            if not neighbor_indices:
+            if not neighbors_indices:
                 continue
             
             # get the indices of not colored neighbors
