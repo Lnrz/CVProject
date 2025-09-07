@@ -13,11 +13,22 @@ class Format(Enum):
 class Image:
     def __init__(self, path: str, image: col.Image):
         self.path = path
-        self.width = image.camera.width
-        self.height = image.camera.height
+        self.__width = image.camera.width
+        self.__height = image.camera.height
+        focal_length_x = image.camera.params[0]
+        self.__half_field_of_view_x = np.arctan(self.__width / (2 * focal_length_x))
         self.__image = image
         self.__camera = image.camera
     
+    def is_in_image(self, point: npt.NDArray[np.float64], offset: float = 0) -> bool:
+        return (point[0] >= offset and point[0] <= self.__width - offset and
+                point[1] >= offset and point[1] <= self.__height - offset)
+
+    # point is supposed to be in camera frame
+    def is_in_x_field_of_view(self, point: npt.NDArray[np.float64]) -> bool:
+        angle = np.arctan2(point[0], point[2])
+        return abs(angle) <= self.__half_field_of_view_x
+
     def cam_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         return self.__image.cam_from_world() * points
 
@@ -127,13 +138,15 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
         #     are not behind the camera
         #     are not outside of the image
         #     are not too close to the camera
-        camera_distance_offset = 0.1
+        #     do not form an angle with the viewing direction greater than half fov on the x axis
+        camera_distance_offset = 0.001
         image_border_offset = 0.1
         valid_points_indices = np.array([index for index in range(len(points))
-                                            if not np.isnan(projected_points[index][0]) and
-                                                (projected_points[index][0] >= image_border_offset and projected_points[index][1] >= image_border_offset and
-                                                projected_points[index][0] <= image.width - image_border_offset and projected_points[index][1] <= image.height - image_border_offset) and
-                                                points_in_cam_frame[index][2] >= camera_distance_offset], dtype=np.int32)
+                                            if  not np.isnan(projected_points[index][0]) and
+                                                image.is_in_image(projected_points[index], image_border_offset) and
+                                                points_in_cam_frame[index][2] >= camera_distance_offset and
+                                                image.is_in_x_field_of_view(points_in_cam_frame[index])]
+                                        , dtype=np.int32)
         
         # get the distance from camera of the valid points
         valid_points_depths = points_in_cam_frame[valid_points_indices][:,2]
