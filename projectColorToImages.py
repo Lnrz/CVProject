@@ -78,7 +78,17 @@ def get_arguments() -> argp.Namespace:
     if args.max_depth_difference < 0:
         print("Max depth difference can't be lower than 0.")
         exit()
-    
+    if args.influence_radius < 0:
+        print("Influence radius can't be lower than 0.")
+        exit()
+
+    if not args.disable_filling and args.fill_radius < 0:
+        print("Fill radius can't be lower than 0.")
+        exit()
+    if not args.disable_filling and (args.fill_threshold < 0 or args.fill_threshold >= 1):
+        print("Fill threshold must be between 0 and 1, 1 excluded.")
+        exit() 
+
     if args.image_cap < 0:
         print("Image cap must be at least 0.")
         exit()
