@@ -20,9 +20,9 @@ class Image:
         self.__image = image
         self.__camera = image.camera
     
-    def is_in_image(self, point: npt.NDArray[np.float64], offset: float = 0) -> bool:
-        return (point[0] >= offset and point[0] <= self.__width - offset and
-                point[1] >= offset and point[1] <= self.__height - offset)
+    def is_in_image(self, point: npt.NDArray[np.float64]) -> bool:
+        return (point[0] >= 0 and point[0] <= self.__width and
+                point[1] >= 0 and point[1] <= self.__height)
 
     # point is supposed to be in camera frame
     def is_in_x_field_of_view(self, point: npt.NDArray[np.float64]) -> bool:
@@ -137,14 +137,10 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
         # get valid points i.e. points that:
         #     are not behind the camera
         #     are not outside of the image
-        #     are not too close to the camera
         #     do not form an angle with the viewing direction greater than half fov on the x axis
-        camera_distance_offset = 0.001
-        image_border_offset = 0.1
         valid_points_indices = np.array([index for index in range(len(points))
                                             if  not np.isnan(projected_points[index][0]) and
-                                                image.is_in_image(projected_points[index], image_border_offset) and
-                                                points_in_cam_frame[index][2] >= camera_distance_offset and
+                                                image.is_in_image(projected_points[index]) and
                                                 image.is_in_x_field_of_view(points_in_cam_frame[index])]
                                         , dtype=np.int32)
         
