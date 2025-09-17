@@ -2,39 +2,8 @@ import numpy as np
 import numpy.typing as npt
 import pycolmap as col
 import argparse as argp
-import os
 from scipy.spatial import KDTree
-from collections.abc import Iterable
-
-class Image:
-    def __init__(self, path: str, image: col.Image):
-        self.path = path
-        self.name = os.path.split(image.name)[1]
-        self.width = image.camera.width
-        self.height = image.camera.height
-        focal_length_x = image.camera.params[0]
-        self.__half_field_of_view_x = np.arctan(self.width / (2 * focal_length_x))
-        self.__image = image
-        self.__camera = image.camera
-    
-    def is_in_image(self, point: npt.NDArray[np.float64]) -> bool:
-        return (point[0] >= 0 and point[0] <= self.width and
-                point[1] >= 0 and point[1] <= self.height)
-
-    # point is supposed to be in camera frame
-    def is_in_x_field_of_view(self, point: npt.NDArray[np.float64]) -> bool:
-        angle = np.arctan2(point[0], point[2])
-        return abs(angle) <= self.__half_field_of_view_x
-
-    def cam_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__image.cam_from_world() * points
-
-    def project_points_from_cam(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__camera.img_from_cam(points)
-
-    def project_points_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__camera.img_from_cam(self.__image.cam_from_world() * points)
-
+from common import Image, filter_images
 
 
 def get_arguments() -> argp.Namespace:
@@ -69,7 +38,7 @@ def get_arguments() -> argp.Namespace:
     args = parser.parse_args()
     
     if args.alpha <= 0 or args.alpha > 1:
-        print("Alpha should be between 0 and 1, 0 excluded.")
+        print("Alpha must be in (0,1].")
         exit()
 
     if args.neighbor_distance < 0:
@@ -86,7 +55,7 @@ def get_arguments() -> argp.Namespace:
         print("Fill radius can't be lower than 0.")
         exit()
     if not args.disable_filling and (args.fill_threshold < 0 or args.fill_threshold >= 1):
-        print("Fill threshold must be between 0 and 1, 1 excluded.")
+        print("Fill threshold must be in [0,1).")
         exit() 
 
     if args.image_cap < 0:
@@ -108,46 +77,30 @@ def extract_points_and_colors(model_path: str) -> tuple[npt.NDArray[np.float64],
     
     return points, colors
 
-def filter_images(rec: col.Reconstruction, image_folder_path: str, image_filter: str) -> Iterable[Image]:
-    images = []
-    
-    for image in rec.images.values():
-        image: col.Image
-        if image_filter in image.name:
-            images.append(Image(image_folder_path + image.name, image))
-    
-    if not images:
-        print(f"No image match the filter: {image_filter}")
-        exit()
-
-    return images
-
 def alpha_blend(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], a: float) -> npt.NDArray[np.uint8]:
     return (a * x + (1 -a) * y).astype(np.uint8)
 
 def project_colors(image: Image, points: npt.NDArray[np.float64], colors: npt.NDArray[np.float64], alpha: float, neighbor_radius: float, max_depth_difference: float, use_purple: bool, influence_radius: float, disable_filling: bool, fill_radius: float, fill_threshold: float) -> col.Bitmap | None:
-    # data structure for keeping the colors of every pixel
+    # the shape of the array is [height, width, 3], the same col.Bitmap uses
+    # so it also means that to access the pixel (x,y) the index is [y,x]
     colors_per_pixel = [[[] for i in range(image.width)] for j in range(image.height)]
+    # pixel positions are expressed in the (x+.5,y+.5) format
     pixel_positions = np.array([(i+0.5, j+0.5) for i in range(image.width) for j in range(image.height)], dtype=np.float64)
     pixel_tree = KDTree(pixel_positions)
 
-    # load image in memory
-    # the array has size [height, width, 3]
     image_bitmap = col.Bitmap.read(image.path, True)
     if image_bitmap is None:
         print(f"    Couldn't read image at {image.path}. Skipping it...")
         return None
+    # the array has shape [height, width, 3]
     image_data = image_bitmap.to_array()
 
-    # change points frame from world to camera
     points_in_cam_frame = image.cam_from_world(points)
-    # project points on image
     projected_points = image.project_points_from_cam(points_in_cam_frame)
     
     # get valid points i.e. points that:
     #     are not behind the camera
     #     are not outside of the image
-    #     are not too close to the camera
     #     do not form an angle with the viewing direction greater than half fov on the x axis
     valid_points_indices = np.array([index for index in range(len(points))
                                         if  not np.isnan(projected_points[index][0]) and
@@ -155,35 +108,29 @@ def project_colors(image: Image, points: npt.NDArray[np.float64], colors: npt.ND
                                             image.is_in_x_field_of_view(points_in_cam_frame[index])]
                                     , dtype=np.int32)
     
-    # get the distance from camera of the valid points
+    # get the distance from the camera of the valid points
     valid_points_depths = points_in_cam_frame[valid_points_indices][:,2]
-
-    # put valid points in a 2dtree
+    
     projected_points_tree = KDTree(projected_points[valid_points_indices])
-    
-    # find neighbors of all valid points
     neighbors = projected_points_tree.query_ball_tree(projected_points_tree, neighbor_radius)
-    
-    # projecting points colors to image
     for index, neighbor_indices in enumerate(neighbors):
-        # get lowest depth in the neighbors
         lowest_depth = np.min(valid_points_depths[neighbor_indices], initial=np.inf)
 
         # skip point if in the neighbor there is a point closer to the camera by a certain difference
         if (lowest_depth != np.inf) and (valid_points_depths[index] - lowest_depth > max_depth_difference):
             continue
         
-        # get affected pixel coordinates for projected point
+        # get pixels inside the projected point range of influence
+        # we can't use "index" to access "projected_points" since it's the index of the point once all non valid points are removed
+        # (in "projected_points_tree" we are inserting only the valid points)
+        # so we have to first access the "valid_points_indices" array with "index" to get the effective index of the point
         affected_pixels_indices = pixel_tree.query_ball_point(projected_points[valid_points_indices[index]], influence_radius)
         affected_pixels_coordinates = np.floor(pixel_positions[affected_pixels_indices]).astype(np.uint32)
 
-        # add colors to affected pixels
         for pixel_coordinates in affected_pixels_coordinates:
             colors_per_pixel[pixel_coordinates[1]][pixel_coordinates[0]].append(colors[valid_points_indices[index]])
 
-    # color for not colored points
     purple = np.array([178, 0, 254], dtype=np.float64)
-    # calculate final colors for pixels
     final_colors = np.array([
                                 [alpha_blend(np.mean(colors, axis=0), image_data[y, x].astype(np.float64), alpha)
                                     if colors
@@ -195,17 +142,17 @@ def project_colors(image: Image, points: npt.NDArray[np.float64], colors: npt.ND
     if not disable_filling:
         print("    Filling...")
         for i, j in [(i, j) for j, row in enumerate(colors_per_pixel) for i, colors in enumerate(row) if not colors]:
-            # get pixel neighbors
             neighbors_indices = pixel_tree.query_ball_point((i+0.5, j+0.5), fill_radius)
             if not neighbors_indices:
                 continue
             
+            # change coordinates from (x+.5,y+.5) to (x,y)
             neighbors_coordinates = np.floor(pixel_positions[neighbors_indices]).astype(np.uint32)
             colored_neighbors_coordinates = np.array([coordinates for coordinates in neighbors_coordinates
                                                         if colors_per_pixel[coordinates[1]][coordinates[0]]]
                                                     , dtype=np.uint32)
 
-            # check if there are enough colored neighbors
+            # check if there are enough colored neighbors, otherwise skip the pixel
             if len(colored_neighbors_coordinates) / len(neighbors_coordinates) < 1 - fill_threshold:
                 continue
 

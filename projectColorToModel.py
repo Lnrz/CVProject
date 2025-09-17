@@ -5,38 +5,11 @@ import argparse as argp
 from scipy.spatial import KDTree
 from enum import Enum
 from collections.abc import Iterable
+from common import Image, filter_images
 
 class Format(Enum):
     SPARSE = 0
     DENSE = 1
-
-class Image:
-    def __init__(self, path: str, image: col.Image):
-        self.path = path
-        self.__width = image.camera.width
-        self.__height = image.camera.height
-        focal_length_x = image.camera.params[0]
-        self.__half_field_of_view_x = np.arctan(self.__width / (2 * focal_length_x))
-        self.__image = image
-        self.__camera = image.camera
-    
-    def is_in_image(self, point: npt.NDArray[np.float64]) -> bool:
-        return (point[0] >= 0 and point[0] <= self.__width and
-                point[1] >= 0 and point[1] <= self.__height)
-
-    # point is supposed to be in camera frame
-    def is_in_x_field_of_view(self, point: npt.NDArray[np.float64]) -> bool:
-        angle = np.arctan2(point[0], point[2])
-        return abs(angle) <= self.__half_field_of_view_x
-
-    def cam_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__image.cam_from_world() * points
-
-    def project_points_from_cam(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__camera.img_from_cam(points)
-
-    def project_points_from_world(self, points: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        return self.__camera.img_from_cam(self.__image.cam_from_world() * points)
 
 
 
@@ -95,24 +68,9 @@ def get_arguments() -> argp.Namespace:
 
     return args
 
-def filter_images(rec: col.Reconstruction, image_folder_path: str, image_filter: str) -> Iterable[Image]:
-    images = []
-    
-    for image in rec.images.values():
-        image: col.Image
-        if image_filter in image.name:
-            images.append(Image(image_folder_path + image.name, image))
-    
-    if not images:
-        print(f"No image match the filter: {image_filter}")
-        exit()
-
-    return images
-
 def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], neighbor_distance: float, max_depth_difference: float, disable_filling: bool, filling_threshold: float, filling_radius: float, image_cap: int) -> npt.NDArray[np.uint8]:
-    # data structure for keeping the colors of every point
     colors_per_point = [[] for i in range(points.shape[0])]
-    # projecting colors to points
+    
     print("Processing images...")
     images_length = len(images)
     for image_index, image in enumerate(images):
@@ -121,17 +79,15 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
         print(f"    Processing {image_index_str}th image out of {images_length}...")
         print(f"    Image is {image.path}")
         
-        # load image in memory
-        # the array has size [height, width, 3]
         image_data = col.Bitmap.read(image.path, True)
         if image_data is None:
             print(f"    Couldn't read image at {image.path}. Skipping it...")
             continue
+        # the array has size [height, width, 3]
+        # it also means that to access the pixel (x,y) the index is [y,x]
         image_data = image_data.to_array()
 
-        # change frame from world to camera
         points_in_cam_frame = image.cam_from_world(points)
-        # project points on image
         projected_points = image.project_points_from_cam(points_in_cam_frame)
 
         # get valid points i.e. points that:
@@ -144,29 +100,26 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
                                                 image.is_in_x_field_of_view(points_in_cam_frame[index])]
                                         , dtype=np.int32)
         
-        # get the distance from camera of the valid points
+        # get the distance from the camera of the valid points
         valid_points_depths = points_in_cam_frame[valid_points_indices][:,2]
 
-        # put valid points in a 2dtree
         projected_points_tree = KDTree(projected_points[valid_points_indices])
-        
-        # find neighbors of all valid points
         neighbors = projected_points_tree.query_ball_tree(projected_points_tree, neighbor_distance)
-        
         print(f"    Projecting {image_index_str}th image's colors...")
         for index, neighbor_indices in enumerate(neighbors):
-            # get lowest depth in the neighbors
             lowest_depth = np.min(valid_points_depths[neighbor_indices], initial=np.inf)
 
-            # skip point if in the neighbor there is a point closer to the camera by a certain difference
+            # skip the point if in the neighbor there is a point closer to the camera by a certain difference
             if (lowest_depth != np.inf) and (valid_points_depths[index] - lowest_depth > max_depth_difference):
                 continue
 
-            # get color from image
+            # use the truncated projected point coordinates to get the color
             color = image_data[np.floor(projected_points[valid_points_indices[index]][1]).astype(np.int32),
                                np.floor(projected_points[valid_points_indices[index]][0]).astype(np.int32)]
-
-            # add color to point
+            
+            # we can't use "index" to access "colors_per_point" since it's the index of the point once all non valid points are removed
+            # (in "projected_points_tree" we are inserting only the valid points)
+            # so we have to first access the "valid_points_indices" array with "index" to get the effective index of the point
             colors_per_point[valid_points_indices[index]].append(color)
         
         if image_cap != 0 and image_index == image_cap - 1:
@@ -174,9 +127,7 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
             break
 
     print("Calculating colors...")
-    # color for not colored points
     purple = np.array([178, 0, 254], dtype=np.float64)
-    # calculate final color for colored points
     colors = np.array([np.mean(colors, axis=0)
                             if colors
                             else purple
@@ -184,40 +135,33 @@ def project_colors(points: npt.NDArray[np.float64], images: Iterable[Image], nei
     
     if not disable_filling:
         print("Filling...")
-        # get indices of not colored points
         not_colored_point_indices = np.array([index
                                                 for index, colors in enumerate(colors_per_point)
                                                 if not colors])
-        # put points in 3D trees
         points_tree = KDTree(points)
         not_colored_points_tree = KDTree(points[not_colored_point_indices])
-        
-        # find neighbors
         neighbors = not_colored_points_tree.query_ball_tree(points_tree, filling_radius)
 
         for index, neighbors_indices in enumerate(neighbors):
-            # check if there are neighbors otherwise skip the point
+            # if there are no neighbors skip the point
             if not neighbors_indices:
                 continue
             
-            # get the indices of not colored neighbors
             not_colored_neighbor_indices = np.intersect1d(neighbor_indices, not_colored_point_indices)
             # if the percentage of not colored neighbors is greater than the threshold skip the point
             if len(not_colored_neighbor_indices) / len(neighbor_indices) > filling_threshold:
                 continue
             
-            # remove purple neighbor indices
+            # remove not colored neighbors
             neighbor_indices = np.setdiff1d(neighbor_indices, not_colored_neighbor_indices)
-            # get the neighbor colors
-            neighbor_colors = colors[neighbor_indices]
+            # get the colors of colored neighbors
+            colored_neighbor_colors = colors[neighbor_indices]
             
-            # put as the color of the point the median of the neighbor colors
-            colors[index] = np.median(neighbor_colors, axis=0)
+            colors[index] = np.median(colored_neighbor_colors, axis=0)
     
     return colors.astype(np.uint8)
 
 def write_rec(out_path: str, rec: col.Reconstruction, ids: npt.NDArray[np.uint32], colors: npt.NDArray[np.uint8]):
-    # color reconstruction points
     print("Coloring...")
     for point_id, point_color in zip(ids, colors):
         rec.point3D(point_id).color = point_color
@@ -226,7 +170,6 @@ def write_rec(out_path: str, rec: col.Reconstruction, ids: npt.NDArray[np.uint32
     rec.write(out_path)
 
 def write_ply(out_path: str, points: npt.NDArray[np.float64], colors: npt.NDArray[np.uint8]):
-    # add points to model
     print("Coloring...")
     ply = col.Reconstruction()
     dummy_track = col.Track()
