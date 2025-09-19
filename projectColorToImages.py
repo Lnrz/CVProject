@@ -7,6 +7,10 @@ from common import Image, purple, filter_images, get_valid_points_indices
 
 
 def get_arguments() -> argp.Namespace:
+    """Get the arguments from the command line and check their validity.
+    
+    If an argument is invalid stop the script.
+    """
     parser = argp.ArgumentParser(description="Project Model Color to Images")
     parser.add_argument("reconstruction_path", type=str, help="Path to the reconstruction.")
     parser.add_argument("model_path", type=str, help="Path to the model.")
@@ -65,6 +69,14 @@ def get_arguments() -> argp.Namespace:
     return args
 
 def load_points_and_colors(model_path: str) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Load the data from the model found at ``model_path``.
+    
+    If the model has no points stop the script.
+
+    Return
+    - the points, as an numpy array of 3d vectors of ``float64``;
+    - the colors, as a numpy array of 3d vectors of ``float64``.
+    """
     ply = col.Reconstruction()
     ply.import_PLY(model_path)
 
@@ -78,9 +90,27 @@ def load_points_and_colors(model_path: str) -> tuple[npt.NDArray[np.float64], np
     return points, colors
 
 def alpha_blend(x: npt.NDArray[np.float64], y: npt.NDArray[np.float64], a: float) -> npt.NDArray[np.uint8]:
+    """Alpha blend ``x`` and ``y`` using as x's alpha ``a``."""
     return (a * x + (1 -a) * y).astype(np.uint8)
 
 def project_colors(image: Image, points: npt.NDArray[np.float64], colors: npt.NDArray[np.float64], pixel_tree: KDTree, influence_radius: float, alpha: float, use_purple: bool) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int32]] | None:
+    """Project the colors of ``points`` to ``image``.
+    
+    The indices of ``points`` and ``colors`` must match, that is: the color of the n-th point of ``points`` is the n-th color of ``colors``.
+    
+    ``pixel_tree`` is a ``KDTree`` containing the coordinates of the pixels of ``image``.
+
+    ``influence_radius`` specify the influence of a projected point, the color of the point will be added to the list of colors of any pixel under its influence.
+
+    ``alpha`` specify the alpha of the colors projected on the image.
+
+    ``use_purple`` if ``True`` purple will be used for pixels where colors were not projected, otherwise the original pixels'colors will be kept.
+
+    Return:
+    - the colors of the new image, as a numpy array of shape ``[height,width,3]`` and type ``float64``
+    - and the indices of the pixels that were not colored, as a numpy array where every element specify the coordinates of the pixel as (x,y) and is of type ``int32``.
+    - if the projection was not successful, just ``None``.
+    """
     # the shape of the array is [height, width, 3], the same col.Bitmap uses
     # so it also means that to access the pixel (x,y) has index [y,x]
     colors_per_pixel = [[[] for x in range(image.width)] for y in range(image.height)]
@@ -106,16 +136,24 @@ def project_colors(image: Image, points: npt.NDArray[np.float64], colors: npt.ND
                                           else alpha_blend(purple, image_data[y, x].astype(np.float64), alpha))
                                 for x, colors in enumerate(row)]
                             for y, row in enumerate(colors_per_pixel)])
-    not_colored_points_coordinates = np.array([(x, y)
+    not_colored_pixels_coordinates = np.array([(x, y)
                                             for y, row in enumerate(colors_per_pixel)
                                             for x, colors in enumerate(row) if not colors],
                                             dtype=np.uint32)
 
-    return final_colors, not_colored_points_coordinates
+    return final_colors, not_colored_pixels_coordinates
 
-def fill_colors(final_colors: npt.NDArray[np.float64], not_colored_points_coordinates: npt.NDArray[np.uint32], pixel_tree: KDTree, fill_radius: float, fill_threshold: float):
-    not_colored_points_indices_set = {(x,y) for x, y in not_colored_points_coordinates} # data structure to speed up membership lookup
-    for x, y in not_colored_points_coordinates:
+def fill_colors(final_colors: npt.NDArray[np.float64], not_colored_pixels_coordinates: npt.NDArray[np.uint32], pixel_tree: KDTree, fill_radius: float, fill_threshold: float):
+    """Fill ``final_colors`` by taking a median of the neighborhood, if possible, for the pixels specified by ``not_colored_pixels_coordinates``.
+    
+    ``pixel_tree`` is a ``KDTree`` containing the coordinates of the pixels of ``image``.
+
+    ``fill_radius`` specify the size of the neighborhood, that is what is the maximum distance between two neighbors.
+    
+    ``fill_threshold`` specify the minimum percentage of colored neighbors a point must have to be filled.
+    """
+    not_colored_points_indices_set = {(x,y) for x, y in not_colored_pixels_coordinates} # data structure to speed up membership lookup
+    for x, y in not_colored_pixels_coordinates:
         neighbors_indices = pixel_tree.query_ball_point((x+0.5, y+0.5), fill_radius)
         if not neighbors_indices:
             continue

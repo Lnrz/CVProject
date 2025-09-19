@@ -7,12 +7,17 @@ from enum import Enum
 from common import Image, purple, filter_images, get_valid_points_indices
 
 class Format(Enum):
+    """Enum used to specify the format."""
     SPARSE = 0
     DENSE = 1
 
 
 
 def get_arguments() -> argp.Namespace:
+    """Get the arguments from the command line and check their validity.
+    
+    If an argument is invalid stop the script.
+    """
     parser = argp.ArgumentParser(description="Project Image Color to Model")
     parser.add_argument("reconstruction_path", type=str, help="Path to the reconstruction.")
     parser.add_argument("image_folder_path", type=str, help="Path where the images are stored.")
@@ -68,6 +73,14 @@ def get_arguments() -> argp.Namespace:
     return args
 
 def load_points_and_ids(rec: col.Reconstruction, model_path: str, out_format: Format) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.uint32] | None]:
+    """Load the data from the reconstruction or model based on ``out_format``.
+    
+    If the reconstruction or model have no points stop the script.
+
+    Return
+    - the points, as an numpy array of 3d vectors of ``float64``;
+    - the ids, if ``out_format`` is ``SPARSE``, as a numpy array of ``uint32``, or ``None``, if ``out_format`` is ``DENSE``.
+    """
     match out_format:
         case Format.SPARSE:
             ids = np.array([point_id for point_id in rec.points3D.keys()], dtype=np.uint32)
@@ -86,6 +99,12 @@ def load_points_and_ids(rec: col.Reconstruction, model_path: str, out_format: Fo
     return points, ids
 
 def project_colors(image: Image, colors_per_point: list[list[npt.NDArray[np.uint8]]], projected_points: npt.NDArray[np.float64], valid_points_indices: npt.NDArray[np.int32]) -> bool:
+    """Project the colors of ``image`` to the points specificed by ``valid_points_indices`` given ``projected_points``.
+    
+    The indices of ``colors_per_point`` and ``projected_points`` must match, that is: the list of color of the n-th point of ``projected_points`` is the n-th list of ``colors_per_point``.
+    
+    Return ``True`` if the projection was successful, ``False`` if the image could not be loaded.
+    """
     image_bitmap = col.Bitmap.read(image.path, True)
     if image_bitmap is None:
         # could not read image, returning False
@@ -101,6 +120,12 @@ def project_colors(image: Image, colors_per_point: list[list[npt.NDArray[np.uint
     return True
 
 def fill_colors(colors: npt.NDArray[np.float64], points: npt.NDArray[np.float64], not_colored_points_indices: npt.NDArray[np.int32], fill_radius: float, fill_threshold: float):
+    """Given ``points``, fill ``colors`` by taking a median of the neighborhood, if possible, for the points specified by ``not_colored_points_indices``.
+    
+    ``fill_radius`` specify the size of the neighborhood, that is what is the maximum distance between two neighbors.
+    
+    ``fill_threshold`` specify the minimum percentage of colored neighbors a point must have to be filled.
+    """
     points_tree = KDTree(points)
     not_colored_points_tree = KDTree(points[not_colored_points_indices])
     neighbors = not_colored_points_tree.query_ball_tree(points_tree, fill_radius)
@@ -122,12 +147,20 @@ def fill_colors(colors: npt.NDArray[np.float64], points: npt.NDArray[np.float64]
         colors[index] = np.median(colored_neighbor_colors, axis=0)
 
 def write_rec(out_path: str, rec: col.Reconstruction, ids: npt.NDArray[np.uint32], colors: npt.NDArray[np.uint8]):
+    """Write ``rec`` to ``out_path`` after updating its points' colors with ``colors``.
+    
+    The point with the n-th id of ``ids`` has its color changed to the n-th color of ``colors``.
+    """
     for point_id, point_color in zip(ids, colors):
         rec.point3D(point_id).color = point_color
     
     rec.write(out_path)
 
 def write_ply(out_path: str, points: npt.NDArray[np.float64], colors: npt.NDArray[np.uint8]):
+    """Write a ply file to ``out_path`` with the points specified by ``points`` and their colors specified by ``colors``.
+    
+    The indices of ``points`` and ``colors`` must match, that is: the n-th point of ``points`` has the n-th color of ``colors``.
+    """
     ply = col.Reconstruction()
     dummy_track = col.Track()
     for index in range(points.shape[0]):
